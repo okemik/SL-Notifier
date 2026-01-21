@@ -13,6 +13,9 @@ if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
   throw new Error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in env");
 }
 
+const BOT_TOKEN: string = TELEGRAM_BOT_TOKEN;
+const CHAT_ID: string = TELEGRAM_CHAT_ID;
+
 const TRANSPORT_MODE = process.env.TRANSPORT_MODE || "METRO";
 const FUTURE = (process.env.FUTURE || "false").toLowerCase() === "true";
 const LINES = (process.env.LINES || "17,18,19")
@@ -45,8 +48,8 @@ async function checkAndNotify() {
 
       const text = formatDeviation(d, PREFERRED_LANG);
       await sendTelegramMessage({
-        token: TELEGRAM_BOT_TOKEN,
-        chatId: TELEGRAM_CHAT_ID,
+        token: BOT_TOKEN,
+        chatId: CHAT_ID,
         text,
       });
 

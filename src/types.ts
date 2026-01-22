@@ -3,6 +3,7 @@ export type Deviation = {
   version: number;
   created: string;
   modified: string;
+  transport_mode?: string;
   publish?: { from?: string; upto?: string };
   message_variants: Array<{
     header: string;

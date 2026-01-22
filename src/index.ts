@@ -46,7 +46,7 @@ async function checkAndNotify() {
       const key = `${d.deviation_case_id}:${d.version}`;
       if (store.alreadySent(key)) continue;
 
-      const text = formatDeviation(d, PREFERRED_LANG);
+      const text = await formatDeviation(d, PREFERRED_LANG);
       await sendTelegramMessage({
         token: BOT_TOKEN,
         chatId: CHAT_ID,

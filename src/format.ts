@@ -1,10 +1,11 @@
 import type { Deviation } from "./types.js";
+import { translateSvToEn } from "./translate.js";
 
 export function pickVariant(d: Deviation, preferredLang = "sv") {
   return d.message_variants.find((v) => v.language === preferredLang) ?? d.message_variants[0];
 }
 
-export function formatDeviation(d: Deviation, preferredLang = "sv") {
+export async function formatDeviation(d: Deviation, preferredLang = "sv") {
   const v = pickVariant(d, preferredLang);
 
   const scope =
@@ -18,5 +19,15 @@ export function formatDeviation(d: Deviation, preferredLang = "sv") {
   const header = v?.header ?? "Störning";
   const details = v?.details ?? "";
 
-  return `🚇 SL Aksaklık (Green line)\n${scope}\n\n🧾 ${header}\n${details}${publishUpto}${link}\n\nID: ${d.deviation_case_id} v${d.version}`;
+  const svMessage = `${header}\n${details}${publishUpto}${link}`;
+  const svSummary = `${header}\n${details}`.trim();
+
+  try {
+    const enSummary = await translateSvToEn(svSummary);
+
+    return `🚇 SL ALERT – Green Line\n${scope}\n\n🇬🇧 Summary (EN):\n${enSummary}\n\n🇸🇪 Original message (SV):\n${svMessage}\n\nID: ${d.deviation_case_id} v${d.version}`;
+  } catch (error) {
+    console.warn("Translation failed, sending Swedish only:", error);
+    return `🚇 SL ALERT – Green Line\n${scope}\n\n🇸🇪 Original message (SV):\n${svMessage}\n\nID: ${d.deviation_case_id} v${d.version}`;
+  }
 }

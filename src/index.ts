@@ -33,8 +33,11 @@ const PRUNE_DAYS = Number(process.env.PRUNE_DAYS || "14");
 const store = new StateStore(process.env.STATE_DB || "state.db");
 
 let tick = 0;
+let isRunning = false;
 
 async function checkAndNotify() {
+  if (isRunning) return;
+  isRunning = true;
   try {
     const deviations = await fetchDeviations({
       transportMode: TRANSPORT_MODE,
@@ -60,6 +63,8 @@ async function checkAndNotify() {
     if (tick % 60 === 0) store.prune(PRUNE_DAYS);
   } catch (err: any) {
     console.error("checkAndNotify error:", err?.message ?? err);
+  } finally {
+    isRunning = false;
   }
 }
 
@@ -69,6 +74,10 @@ setInterval(checkAndNotify, Math.max(10_000, CHECK_INTERVAL_MS)); // minimum 10s
 
 const app = express();
 app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("/check", async (_req, res) => {
+  await checkAndNotify();
+  res.json({ ok: true, ran: true });
+});
 app.get("/", (_req, res) => res.send("SL Green line Telegram notifier (near real-time) is running."));
 
 app.listen(PORT, () => console.log(`Server up on :${PORT}`));

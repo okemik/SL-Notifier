@@ -27,7 +27,6 @@ const LINES = (process.env.LINES || "17,18,19")
 
 const PORT = Number(process.env.PORT || "3000");
 const PREFERRED_LANG = process.env.PREFERRED_LANG || "sv";
-const CHECK_INTERVAL_MS = Number(process.env.CHECK_INTERVAL_MS || "60000");
 const PRUNE_DAYS = Number(process.env.PRUNE_DAYS || "14");
 
 const store = new StateStore(process.env.STATE_DB || "state.db");
@@ -36,8 +35,6 @@ let tick = 0;
 let isRunning = false;
 
 async function checkAndNotify() {
-  if (isRunning) return;
-  isRunning = true;
   try {
     const deviations = await fetchDeviations({
       transportMode: TRANSPORT_MODE,
@@ -63,20 +60,23 @@ async function checkAndNotify() {
     if (tick % 60 === 0) store.prune(PRUNE_DAYS);
   } catch (err: any) {
     console.error("checkAndNotify error:", err?.message ?? err);
-  } finally {
-    isRunning = false;
   }
 }
-
-checkAndNotify();
-
-setInterval(checkAndNotify, Math.max(10_000, CHECK_INTERVAL_MS)); // minimum 10s safeguard
 
 const app = express();
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/check", async (_req, res) => {
-  await checkAndNotify();
-  res.json({ ok: true, ran: true });
+  if (isRunning) {
+    res.json({ ok: true, skipped: true });
+    return;
+  }
+  isRunning = true;
+  try {
+    await checkAndNotify();
+    res.json({ ok: true, ran: true });
+  } finally {
+    isRunning = false;
+  }
 });
 app.get("/", (_req, res) => res.send("SL Green line Telegram notifier (near real-time) is running."));
 

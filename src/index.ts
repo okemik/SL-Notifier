@@ -43,8 +43,8 @@ type PreparedDeviation = {
   enSummary: string;
   svOriginal: string;
   isCritical: boolean;
-  transportMode: string;
-  lineGroup: "Green Line (17,18,19)" | "Line 40" | "Line 41";
+  transportMode: "METRO" | "TRAIN";
+  lineGroup: string;
 };
 
 function includesKeyword(text: string, keywords: string[]) {
@@ -78,8 +78,12 @@ function getLineNumbers(d: Deviation) {
   return numbers;
 }
 
-function resolveTransportMode(d: Deviation) {
-  return (d.transport_mode ?? TRANSPORT_MODE).toUpperCase();
+function resolveTransportMode(d: Deviation): "METRO" | "TRAIN" {
+  const mode = (d.transport_mode ?? TRANSPORT_MODE).toUpperCase();
+  if (mode === "METRO" || mode === "TRAIN") {
+    return mode;
+  }
+  throw new Error(`Unsupported transport mode: ${mode}`);
 }
 
 function resolveLineGroup(transportMode: string, lineNumbers: number[]) {

@@ -3,7 +3,6 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { safeError } from "./errors.js";
 import { prepareDeviation } from "./format.js";
-import { createGoogleCloudTranslator } from "./translate.js";
 import { Notifier } from "./notifier.js";
 import { fetchDeviationResult } from "./sl.js";
 import { StateStore } from "./state.js";
@@ -20,9 +19,6 @@ const notifier = new Notifier({
   prepare: deviation => prepareDeviation(deviation, {
     preferredLang: config.preferredLang, transportMode: config.transportMode,
     timeZone: config.timeZone, translate: config.translateEnabled, signal: controller.signal,
-    translator: config.googleTranslateApiKey
-      ? createGoogleCloudTranslator({ apiKey: config.googleTranslateApiKey })
-      : undefined,
   }),
   send: text => sendTelegramMessage({ token: config.botToken, chatId: config.chatId, text, signal: controller.signal }),
   intervalMs: config.intervalMs, pruneDays: config.pruneDays,

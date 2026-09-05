@@ -29,3 +29,41 @@ export function createTranslator(deps: TranslationDependencies = {}) {
   };
 }
 export const translateSvToEn = createTranslator();
+/**
+ * No-key Swedish-to-English translator backed by a self-hosted LibreTranslate
+ * instance (https://libretranslate.com). Run one container (no API key, free):
+ *   docker run -p 5000:5000 libretranslate/libretranslate:1.11
+ * Pass `request` only in tests.
+ */
+export type LibreTranslateTranslatorDependencies = {
+  endpoint?: string;
+  now?: () => number;
+  request?: (text: string, signal?: AbortSignal) => Promise<string>;
+};
+export function createLibreTranslateTranslator(deps: LibreTranslateTranslatorDependencies = {}) {
+  const now = deps.now ?? Date.now;
+  const endpoint = (deps.endpoint ?? "http://localhost:5000").replace(/\/+$/, "");
+  const cache = new Map<string, { value: string; expires: number }>();
+  const request = deps.request ?? (async (text: string, signal?: AbortSignal) => {
+    const response = await axios.post<{ translatedText?: string }>(
+      endpoint + "/translate",
+      { q: text, source: "sv", target: "en", format: "text" },
+      { signal, timeout: 8000, headers: { "Content-Type": "application/json" } },
+    );
+    const translated = response.data?.translatedText;
+    if (typeof translated !== "string") throw new Error("Invalid translation response");
+    return translated;
+  });
+  return async (text: string, options: { signal?: AbortSignal } = {}): Promise<string> => {
+    if (!text.trim()) return text;
+    if (text.length > 4000) throw new Error("Translation input is too long");
+    if (options.signal?.aborted) throw new Error("Translation cancelled");
+    const cached = cache.get(text);
+    if (cached && cached.expires > now()) return cached.value;
+    const translated = await request(text, options.signal);
+    if (!translated.trim()) throw new Error("Empty translation response");
+    if (cache.size >= 256) cache.delete(cache.keys().next().value!);
+    cache.set(text, { value: translated, expires: now() + 3600000 });
+    return translated;
+  };
+}

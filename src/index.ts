@@ -7,6 +7,7 @@ import { Notifier } from "./notifier.js";
 import { fetchDeviationResult } from "./sl.js";
 import { StateStore } from "./state.js";
 import { sendTelegramMessage } from "./telegram.js";
+import { createLibreTranslateTranslator } from "./translate.js";
 
 const config = loadConfig();
 const store = new StateStore(config.stateDb);
@@ -19,6 +20,9 @@ const notifier = new Notifier({
   prepare: deviation => prepareDeviation(deviation, {
     preferredLang: config.preferredLang, transportMode: config.transportMode,
     timeZone: config.timeZone, translate: config.translateEnabled, signal: controller.signal,
+    translator: config.translateBackend === "libre"
+      ? createLibreTranslateTranslator({ endpoint: config.translateEndpoint })
+      : undefined,
   }),
   send: text => sendTelegramMessage({ token: config.botToken, chatId: config.chatId, text, signal: controller.signal }),
   intervalMs: config.intervalMs, pruneDays: config.pruneDays,

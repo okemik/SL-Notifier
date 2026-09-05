@@ -60,6 +60,8 @@ For a host bind mount, ensure the node user (UID 1000) can write the data direct
 | FUTURE | false | Include future deviations |
 | PREFERRED_LANG | sv | Preferred original message language |
 | TRANSLATE_ENABLED | true | Try Swedish-to-English translation if no English variant exists |
+ | TRANSLATE_BACKEND | google | "google" uses Google's free endpoint (now frequently blocked with 429); "libre" uses a self-hosted LibreTranslate instance, no API key |
+ | TRANSLATE_ENDPOINT | Empty | Base URL of a self-hosted LibreTranslate instance (used with TRANSLATE_BACKEND=libre) |
 | TZ | Europe/Stockholm | Time zone for displayed validity dates |
 | PRUNE_DAYS | 14 | Retain inactive sent records for this many days (1–3650) |
 | STATE_DB | state.db | SQLite path; Compose uses /data/state.db |
@@ -67,9 +69,12 @@ For a host bind mount, ensure the node user (UID 1000) can write the data direct
 | CHECK_API_KEY | Empty | Bearer secret for manual checks; empty disables the endpoint |
 
 Invalid values fail at startup rather than silently monitoring different lines.
-Translation uses the existing Google Translate endpoint, has an eight-second timeout, an input bound
-and a small one-hour cache. It is optional: unavailable translation does not prevent the original
-alert from being sent. It is not a contracted translation API.
+Translation is optional: a missing or failing translation never blocks the original alert from being
+sent. `TRANSLATE_BACKEND=google` (default) uses Google's free endpoint, which is now frequently blocked
+with HTTP 429 ("automated queries"), so messages may show only the Swedish original. For key-free
+English output, run a self-hosted LibreTranslate container and set `TRANSLATE_BACKEND=libre`
+(`docker run -p 5000:5000 libretranslate/libretranslate:1.11`); an eight-second timeout, a 4000-character
+input bound and a one-hour cache apply to all backends.
 
 ## Health and manual checks
 

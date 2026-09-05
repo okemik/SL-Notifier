@@ -60,8 +60,9 @@ For a host bind mount, ensure the node user (UID 1000) can write the data direct
 | FUTURE | false | Include future deviations |
 | PREFERRED_LANG | sv | Preferred original message language |
 | TRANSLATE_ENABLED | true | Try Swedish-to-English translation if no English variant exists |
- | TRANSLATE_BACKEND | google | "google" uses Google's free endpoint (now frequently blocked with 429); "libre" uses a self-hosted LibreTranslate instance, no API key |
+ | TRANSLATE_BACKEND | google | "google" (default) uses a built-in free, key-less chain: Google's dict-chrome-ex endpoint with an automatic MyMemory fallback; "libre" uses a self-hosted LibreTranslate instance, no API key |
  | TRANSLATE_ENDPOINT | Empty | Base URL of a self-hosted LibreTranslate instance (used with TRANSLATE_BACKEND=libre) |
+ | TRANSLATE_EMAIL | Empty | Optional; raises the free MyMemory daily character quota when the Google fallback chain is exhausted |
 | TZ | Europe/Stockholm | Time zone for displayed validity dates |
 | PRUNE_DAYS | 14 | Retain inactive sent records for this many days (1–3650) |
 | STATE_DB | state.db | SQLite path; Compose uses /data/state.db |
@@ -70,11 +71,12 @@ For a host bind mount, ensure the node user (UID 1000) can write the data direct
 
 Invalid values fail at startup rather than silently monitoring different lines.
 Translation is optional: a missing or failing translation never blocks the original alert from being
-sent. `TRANSLATE_BACKEND=google` (default) uses Google's free endpoint, which is now frequently blocked
-with HTTP 429 ("automated queries"), so messages may show only the Swedish original. For key-free
-English output, run a self-hosted LibreTranslate container and set `TRANSLATE_BACKEND=libre`
-(`docker run -p 5000:5000 libretranslate/libretranslate:1.11`); an eight-second timeout, a 4000-character
-input bound and a one-hour cache apply to all backends.
+sent. `TRANSLATE_BACKEND=google` (default) uses a free, key-less chain: Google's dict-chrome-ex
+endpoint first, then an automatic fallback to the MyMemory public API (450-character chunks), so no
+API key or extra service is required. If both providers are exhausted, messages fall back to the
+Swedish original. Alternatively, run a self-hosted LibreTranslate container and set
+`TRANSLATE_BACKEND=libre` (`docker run -p 5000:5000 libretranslate/libretranslate:1.11`); an
+eight-second timeout, a 4000-character input bound and a one-hour cache apply to all backends.
 
 ## Health and manual checks
 

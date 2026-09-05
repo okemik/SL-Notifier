@@ -1,27 +1,73 @@
 import axios from "axios";
 type TranslationDependencies = {
-  request?: (text: string, signal?: AbortSignal) => Promise<unknown>;
+  request?: (text: string, signal?: AbortSignal) => Promise<string>;
   now?: () => number;
+};
+// Free, key-less Swedish->English chain used by the default translator:
+// 1) Google's dict-chrome-ex endpoint (best quality, JSON array of strings)
+// 2) MyMemory public API as fallback (450-character chunks, no API key)
+async function googleRequest(text: string, signal?: AbortSignal): Promise<string> {
+  const res = await axios.get<unknown>("https://clients5.google.com/translate_a/t", {
+    params: { client: "dict-chrome-ex", sl: "sv", tl: "en", q: text }, signal, timeout: 8000,
+  });
+  const data = res.data as unknown;
+  if (!Array.isArray(data)) throw new Error("Invalid translation response");
+  if (typeof data[0] === "string") {
+    const translated = data.filter((part): part is string => typeof part === "string").join("");
+    if (!translated.trim()) throw new Error("Empty translation response");
+    return translated;
+  }
+  if (Array.isArray(data[0])) {
+    const translated = data[0].map((part: unknown) =>
+      Array.isArray(part) && typeof part[0] === "string" ? part[0] : "").join("");
+    if (!translated.trim()) throw new Error("Empty translation response");
+    return translated;
+  }
+  throw new Error("Invalid translation response");
+}
+function splitChunks(text: string, limit = 450): string[] {
+  const parts: string[] = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    let end = remaining.lastIndexOf(" ", limit);
+    if (end < limit / 2) end = limit;
+    parts.push(remaining.slice(0, end));
+    remaining = remaining.slice(end).trimStart();
+  }
+  if (remaining) parts.push(remaining);
+  return parts;
+}
+async function myMemoryRequest(text: string, signal?: AbortSignal): Promise<string> {
+  const email = process.env.TRANSLATE_EMAIL?.trim();
+  const translated: string[] = [];
+  for (const chunk of splitChunks(text)) {
+    const res = await axios.get<{ responseData?: { translatedText?: unknown }; responseStatus?: number }>(
+      "https://api.mymemory.translated.net/get",
+      { params: { q: chunk, langpair: "sv|en", ...(email ? { de: email } : {}) }, signal, timeout: 8000 },
+    );
+    const value = res.data.responseData?.translatedText;
+    if (typeof value !== "string" || /MYMEMORY WARNING/i.test(value)) throw new Error("Invalid translation response");
+    translated.push(value.trim());
+  }
+  const joined = translated.join(" ").trim();
+  if (!joined) throw new Error("Empty translation response");
+  return joined;
+}
+const defaultRequest = async (text: string, signal?: AbortSignal): Promise<string> => {
+  try { return await googleRequest(text, signal); }
+  catch (cause) { if (signal?.aborted) throw cause; return await myMemoryRequest(text, signal); }
 };
 export function createTranslator(deps: TranslationDependencies = {}) {
   const now = deps.now ?? Date.now;
   const cache = new Map<string, { value: string; expires: number }>();
-  const request = deps.request ?? (async (text: string, signal?: AbortSignal) => {
-    const response = await axios.get<unknown>("https://translate.googleapis.com/translate_a/single", {
-      params: { client: "gtx", sl: "sv", tl: "en", dt: "t", q: text }, signal, timeout: 8000,
-    });
-    return response.data;
-  });
+  const request = deps.request ?? defaultRequest;
   return async (text: string, options: { signal?: AbortSignal } = {}): Promise<string> => {
     if (!text.trim()) return text;
     if (text.length > 4000) throw new Error("Translation input is too long");
     if (options.signal?.aborted) throw new Error("Translation cancelled");
     const cached = cache.get(text);
     if (cached && cached.expires > now()) return cached.value;
-    const data = await request(text, options.signal);
-    if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error("Invalid translation response");
-    const translated = data[0].map((part: unknown) =>
-      Array.isArray(part) && typeof part[0] === "string" ? part[0] : "").join("");
+    const translated = await request(text, options.signal);
     if (!translated.trim()) throw new Error("Empty translation response");
     if (cache.size >= 256) cache.delete(cache.keys().next().value!);
     cache.set(text, { value: translated, expires: now() + 3600000 });

@@ -5,7 +5,7 @@ type TranslationDependencies = {
 };
 // Free, key-less Swedish->English chain used by the default translator:
 // 1) Google's dict-chrome-ex endpoint (best quality, JSON array of strings)
-// 2) MyMemory public API as fallback (450-character chunks, no API key)
+// 2) MyMemory public API as fallback (500-byte UTF-8 chunks, no API key)
 async function googleRequest(text: string, signal?: AbortSignal): Promise<string> {
   const res = await axios.get<unknown>("https://clients5.google.com/translate_a/t", {
     params: { client: "dict-chrome-ex", sl: "sv", tl: "en", q: text }, signal, timeout: 8000,
@@ -25,16 +25,24 @@ async function googleRequest(text: string, signal?: AbortSignal): Promise<string
   }
   throw new Error("Invalid translation response");
 }
-function splitChunks(text: string, limit = 450): string[] {
+function splitChunks(text: string): string[] {
   const parts: string[] = [];
-  let remaining = text;
-  while (remaining.length > limit) {
-    let end = remaining.lastIndexOf(" ", limit);
-    if (end < limit / 2) end = limit;
-    parts.push(remaining.slice(0, end));
+  let remaining = text.trim();
+  while (remaining) {
+    let bytes = 0, end = 0, wordEnd = 0;
+    for (const character of remaining) {
+      const size = Buffer.byteLength(character, "utf8");
+      if (bytes + size > 500) break;
+      if (/\s/.test(character)) wordEnd = end;
+      bytes += size;
+      end += character.length;
+    }
+    // Prefer a nearby word boundary; never split a Unicode code point.
+    if (end < remaining.length && wordEnd > end / 2) end = wordEnd;
+    const chunk = remaining.slice(0, end).trim();
+    if (chunk) parts.push(chunk);
     remaining = remaining.slice(end).trimStart();
   }
-  if (remaining) parts.push(remaining);
   return parts;
 }
 async function myMemoryRequest(text: string, signal?: AbortSignal): Promise<string> {
@@ -45,8 +53,10 @@ async function myMemoryRequest(text: string, signal?: AbortSignal): Promise<stri
       "https://api.mymemory.translated.net/get",
       { params: { q: chunk, langpair: "sv|en", ...(email ? { de: email } : {}) }, signal, timeout: 8000 },
     );
-    const value = res.data.responseData?.translatedText;
-    if (typeof value !== "string" || /MYMEMORY WARNING/i.test(value)) throw new Error("Invalid translation response");
+    const value = res.data?.responseData?.translatedText;
+    if (res.data?.responseStatus !== 200 || typeof value !== "string" || !value.trim() || /MYMEMORY WARNING/i.test(value)) {
+      throw new Error("Invalid translation response");
+    }
     translated.push(value.trim());
   }
   const joined = translated.join(" ").trim();

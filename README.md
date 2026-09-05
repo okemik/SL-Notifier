@@ -72,11 +72,12 @@ For a host bind mount, ensure the node user (UID 1000) can write the data direct
 Invalid values fail at startup rather than silently monitoring different lines.
 Translation is optional: a missing or failing translation never blocks the original alert from being
 sent. `TRANSLATE_BACKEND=google` (default) uses a free, key-less chain: Google's dict-chrome-ex
-endpoint first, then an automatic fallback to the MyMemory public API (450-character chunks), so no
+endpoint first, then an automatic fallback to the MyMemory public API (at most 500 UTF-8 bytes per chunk), so no
 API key or extra service is required. If both providers are exhausted, messages fall back to the
 Swedish original. Alternatively, run a self-hosted LibreTranslate container and set
 `TRANSLATE_BACKEND=libre` (`docker run -p 5000:5000 libretranslate/libretranslate:1.11`); an
-eight-second timeout, a 4000-character input bound and a one-hour cache apply to all backends.
+eight-second timeout per HTTP request, a 4000-character input bound and a shared one-hour cache apply to all backends.
+MyMemory application errors or blank chunks discard the translation; the original alert is retained.
 
 ## Health and manual checks
 
@@ -116,6 +117,8 @@ another SL fetch. Keep health endpoints on a trusted network or behind your own 
 - Use one service instance and one state database per destination. Do not run multiple replicas against
   the same database, and use a separate database when changing chats.
 - SIGINT/SIGTERM stop polling, cancel network waits, and close SQLite after the current check settles.
+  Service shutdown waits up to ten seconds for the check and HTTP connections. If they do not settle,
+  the process exits with status 1 without closing SQLite underneath an active check.
   Back up the data directory while the service is stopped; include SQLite WAL files if copying a live database.
 
 ## Verification

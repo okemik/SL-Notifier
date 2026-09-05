@@ -63,13 +63,9 @@ export class Notifier {
     this.stopping = true;
     if (this.timer !== undefined) this.cancel(this.timer);
     this.deps.abort?.();
-    if (this.activeCheck) {
-      // Never wait longer than 10s for an in-flight check (grace periods are finite).
-      let timer: unknown;
-      const timeout = new Promise<void>(resolve => { timer = this.schedule(resolve, 10000); });
-      await Promise.race([this.activeCheck, timeout]);
-      if (timer !== undefined) this.cancel(timer);
-    }
+    // Storage must remain open until all in-flight work has settled.
+    // The service shutdown handler enforces the process-level deadline.
+    await this.activeCheck;
   }
   status(): NotifierStatus {
     const recent = this.lastSuccessAt !== null && this.now() - this.lastSuccessAt <= Math.max(120000, this.deps.intervalMs * 3);

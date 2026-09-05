@@ -133,3 +133,28 @@ test("preparation failure and repeated API keys do not block a healthy event", a
   const result = await h.notifier.check();
   assert.equal(result.ok, false); assert.equal(result.sent, 1); assert.equal(h.store.alreadySent("2:1"), true);
 });
+
+
+test("stop waits for an in-flight send and persists its acknowledgement before returning", async t => {
+  let resolveSend!: () => void;
+  let stopped = false;
+  const h = harness(t, { send: () => new Promise<void>(resolve => { resolveSend = resolve; }) });
+  h.store.enqueue(["late:1"], ["Pending send"]);
+  const check = h.notifier.check();
+  await settle();
+  const stopping = h.notifier.stop().then(() => { stopped = true; });
+  try {
+    // Exercise the previous notifier-level timeout without a ten-second real wait.
+    for (const timer of h.timers.filter(timer => timer.delay === 10000)) timer.callback();
+    await settle();
+    assert.equal(stopped, false);
+    assert.equal(h.store.alreadySent("late:1"), false);
+    assert.equal((await h.notifier.check()).skipped, "stopping");
+  } finally {
+    resolveSend();
+    await check;
+    await stopping;
+  }
+  assert.equal(h.store.alreadySent("late:1"), true);
+  assert.equal(h.notifier.status().running, false);
+});

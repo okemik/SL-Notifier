@@ -6,12 +6,16 @@ import { prepareDeviation } from "./format.js";
 import { Notifier } from "./notifier.js";
 import { fetchDeviationResult } from "./sl.js";
 import { StateStore } from "./state.js";
+import { shutdownService } from "./shutdown.js";
 import { sendTelegramMessage } from "./telegram.js";
 import { createLibreTranslateTranslator } from "./translate.js";
 
 const config = loadConfig();
 const store = new StateStore(config.stateDb);
 const controller = new AbortController();
+const translator = config.translateBackend === "libre"
+  ? createLibreTranslateTranslator({ endpoint: config.translateEndpoint })
+  : undefined;
 const notifier = new Notifier({
   store,
   fetch: () => fetchDeviationResult({
@@ -20,10 +24,8 @@ const notifier = new Notifier({
   prepare: deviation => prepareDeviation(deviation, {
     preferredLang: config.preferredLang, transportMode: config.transportMode,
     timeZone: config.timeZone, translate: config.translateEnabled, signal: controller.signal,
-      log: message => console.error(message),
-    translator: config.translateBackend === "libre"
-      ? createLibreTranslateTranslator({ endpoint: config.translateEndpoint })
-      : undefined,
+    log: message => console.error(message),
+    translator,
   }),
   send: text => sendTelegramMessage({ token: config.botToken, chatId: config.chatId, text, signal: controller.signal }),
   intervalMs: config.intervalMs, pruneDays: config.pruneDays,
@@ -38,9 +40,20 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  server.close();
-  try { await notifier.stop(); store.close(); }
-  catch (cause) { console.error(`Shutdown failed: ${safeError(cause)}`); process.exitCode = 1; }
+  try {
+    const drained = await shutdownService({
+      closeHttp: () => new Promise<void>(resolve => { server.close(() => resolve()); }),
+      stop: () => notifier.stop(),
+      closeStore: () => store.close(),
+    });
+    if (!drained) {
+      console.error("Shutdown exceeded 10 seconds; terminating with unfinished work.");
+      process.exit(1);
+    }
+  } catch (cause) {
+    console.error(`Shutdown failed: ${safeError(cause)}`);
+    process.exit(1);
+  }
 }
 server.on("error", cause => {
   console.error(`HTTP server failed: ${safeError(cause)}`);

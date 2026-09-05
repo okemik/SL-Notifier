@@ -1,21 +1,24 @@
 # syntax=docker/dockerfile:1
-FROM node:20-alpine AS deps
+FROM node:24-bookworm-slim AS dependencies
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm install --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
-FROM node:20-alpine AS build
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+FROM dependencies AS build
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build
+RUN npm run build && npm prune --omit=dev --no-audit --no-fund
 
-FROM node:20-alpine AS runner
+FROM node:24-bookworm-slim AS runner
 WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=build /app/dist ./dist
-COPY package.json ./
-COPY --from=deps /app/node_modules ./node_modules
+ENV NODE_ENV=production STATE_DB=/data/state.db TZ=Europe/Stockholm
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node package.json ./
+RUN mkdir -p /data && chown node:node /data
+USER node
+VOLUME ["/data"]
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
+    CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "--enable-source-maps", "dist/index.js"]

@@ -1,0 +1,16 @@
+services:
+  notifier:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      STATE_DB: /data/state.db
+      PORT: "3000"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - notifier-data:/data
+    stop_grace_period: 30s
+
+volumes:
+  notifier-data:

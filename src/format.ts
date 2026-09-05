@@ -1,8 +1,10 @@
 import type { Deviation } from "./types.js";
+import { safeError } from "./errors.js";
 import { translateSvToEn } from "./translate.js";
 export type FormatOptions = {
   preferredLang: string; transportMode: string; timeZone: string; translate?: boolean; signal?: AbortSignal;
   translator?: (text: string, options?: { signal?: AbortSignal }) => Promise<string>;
+  log?: (message: string) => void;
 };
 export type PreparedDeviation = { key: string; group: string; importance: number; text: string };
 const fullText = (variant: Deviation["message_variants"][number]) => [variant.header, variant.details].filter(Boolean).join("\n");
@@ -47,7 +49,8 @@ export async function prepareDeviation(d: Deviation, options: FormatOptions): Pr
       try {
         const translated = await (options.translator ?? translateSvToEn)(originalText, { signal: options.signal });
         blocks.push(`🇬🇧 Translation (EN):\n${translated}`);
-      } catch {
+      } catch (cause) {
+        options.log?.(`Translation failed: ${safeError(cause)}`);
         blocks.push("English translation unavailable; original message follows.");
       }
     }

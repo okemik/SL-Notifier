@@ -53,10 +53,20 @@ async function myMemoryRequest(text: string, signal?: AbortSignal): Promise<stri
   if (!joined) throw new Error("Empty translation response");
   return joined;
 }
-const defaultRequest = async (text: string, signal?: AbortSignal): Promise<string> => {
-  try { return await googleRequest(text, signal); }
-  catch (cause) { if (signal?.aborted) throw cause; return await myMemoryRequest(text, signal); }
+const defaultRequest = createDefaultRequest();
+export type ChainDependencies = {
+  google?: (text: string, signal?: AbortSignal) => Promise<string>;
+  memory?: (text: string, signal?: AbortSignal) => Promise<string>;
 };
+/** Chain order matters: Google first (quality), MyMemory second (quota is per-IP). */
+export function createDefaultRequest(deps: ChainDependencies = {}) {
+  const google = deps.google ?? googleRequest;
+  const memory = deps.memory ?? myMemoryRequest;
+  return async (text: string, signal?: AbortSignal): Promise<string> => {
+    try { return await google(text, signal); }
+    catch (cause) { if (signal?.aborted) throw cause; return await memory(text, signal); }
+  };
+}
 export function createTranslator(deps: TranslationDependencies = {}) {
   const now = deps.now ?? Date.now;
   const cache = new Map<string, { value: string; expires: number }>();

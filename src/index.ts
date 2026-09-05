@@ -20,6 +20,7 @@ const notifier = new Notifier({
   prepare: deviation => prepareDeviation(deviation, {
     preferredLang: config.preferredLang, transportMode: config.transportMode,
     timeZone: config.timeZone, translate: config.translateEnabled, signal: controller.signal,
+      log: message => console.error(message),
     translator: config.translateBackend === "libre"
       ? createLibreTranslateTranslator({ endpoint: config.translateEndpoint })
       : undefined,

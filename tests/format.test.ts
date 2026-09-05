@@ -26,6 +26,18 @@ test("English-only data and failed translation are not labelled as another langu
   assert.match(sv.text, /Original \(SV\)/);
   assert.doesNotMatch(sv.text, /Translation \(EN\)|secret transport payload/);
 });
+test("translation failures are logged with a sanitized reason, never in the message", async () => {
+  const logs: string[] = [];
+  const swedish = deviation(); swedish.message_variants.pop();
+  await prepareDeviation(swedish, {
+    ...options, translate: true,
+    translator: async () => { throw new Error("secret transport payload"); },
+    log: message => logs.push(message),
+  });
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /Translation failed/);
+  assert.doesNotMatch(logs[0], /secret transport payload/);
+});
 test("preferred available language is respected and valid dates use configured timezone", async () => {
   const d = deviation();
   d.message_variants.push({ language: "de", header: "Hinweis", details: "Verspätung" });

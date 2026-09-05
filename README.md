@@ -60,6 +60,7 @@ For a host bind mount, ensure the node user (UID 1000) can write the data direct
 | FUTURE | false | Include future deviations |
 | PREFERRED_LANG | sv | Preferred original message language |
 | TRANSLATE_ENABLED | true | Try Swedish-to-English translation if no English variant exists |
+ | GOOGLE_TRANSLATE_API_KEY | Empty | Google Cloud Translation API v2 key for reliable Swedish→English; without it the free endpoint is attempted (often rate-limited by Google) |
 | TZ | Europe/Stockholm | Time zone for displayed validity dates |
 | PRUNE_DAYS | 14 | Retain inactive sent records for this many days (1–3650) |
 | STATE_DB | state.db | SQLite path; Compose uses /data/state.db |
@@ -67,9 +68,12 @@ For a host bind mount, ensure the node user (UID 1000) can write the data direct
 | CHECK_API_KEY | Empty | Bearer secret for manual checks; empty disables the endpoint |
 
 Invalid values fail at startup rather than silently monitoring different lines.
-Translation uses the existing Google Translate endpoint, has an eight-second timeout, an input bound
-and a small one-hour cache. It is optional: unavailable translation does not prevent the original
-alert from being sent. It is not a contracted translation API.
+Translation is optional: a missing or failing translation never blocks the original alert from being
+sent. Without `GOOGLE_TRANSLATE_API_KEY` the app uses Google's free, unauthenticated endpoint, which is
+unreliable and frequently returns HTTP 429 ("automated queries"), so messages then show only the Swedish
+original. For reliable English output, set `GOOGLE_TRANSLATE_API_KEY` to a Google Cloud Translation API
+v2 key (billing required, pay-per-use); results are cached for one hour with an eight-second timeout and
+a 4000-character input bound.
 
 ## Health and manual checks
 

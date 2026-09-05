@@ -1,6 +1,7 @@
 export type Config = {
   botToken: string; chatId: string; intervalMs: number; transportMode: string;
   lines: number[]; future: boolean; preferredLang: string; translateEnabled: boolean;
+  googleTranslateApiKey: string | undefined;
   timeZone: string; pruneDays: number; stateDb: string; port: number; checkApiKey?: string;
 };
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -42,6 +43,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     intervalMs: integer("CHECK_INTERVAL_MS", 60000, 60000, 86400000), transportMode,
     lines: [...new Set(lineParts.map(Number))], future: boolean("FUTURE", false),
     preferredLang, translateEnabled: boolean("TRANSLATE_ENABLED", true), timeZone,
+    googleTranslateApiKey: env.GOOGLE_TRANSLATE_API_KEY?.trim() || undefined,
     pruneDays: integer("PRUNE_DAYS", 14, 1, 3650), stateDb,
     port: integer("PORT", 3000, 1, 65535), checkApiKey: env.CHECK_API_KEY?.trim() || undefined,
   };

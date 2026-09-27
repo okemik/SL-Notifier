@@ -143,6 +143,7 @@ export class CommandPoller {
   private loop: Promise<void> | null = null;
   private stopping = false;
   private username?: string;
+  private readonly warnedChats = new Set<string>();
 
   constructor(private readonly deps: CommandPollerDependencies) {
     this.signal = deps.signal ? AbortSignal.any([deps.signal, this.controller.signal]) : this.controller.signal;
@@ -166,7 +167,11 @@ export class CommandPoller {
     const startedAt = this.now();
     let failures = 0;
     while (this.active) {
-      try { this.username = (await this.deps.api.getMe(this.signal)).username; break; }
+      try {
+        this.username = (await this.deps.api.getMe(this.signal)).username;
+        this.deps.log?.(`Telegram commands enabled for @${this.username ?? "unknown"} in chat ${this.deps.chatId}`);
+        break;
+      }
       catch (cause) {
         if (!this.active) return;
         this.deps.log?.(`Telegram getMe failed: ${safeError(cause)}`);
@@ -202,10 +207,23 @@ export class CommandPoller {
   }
   private async handleUpdate(update: TelegramUpdate, startedAt: number): Promise<void> {
     const message = update.message;
-    if (!message || !isAuthorizedChat(message.chat, this.deps.chatId)) return;
-    if (message.date * 1000 < startedAt - MAX_COMMAND_AGE_MS) return;
+    if (!message) return;
     const command = parseCommand(message.text, this.username);
     if (!command) return;
+    if (!isAuthorizedChat(message.chat, this.deps.chatId)) {
+      // Logged once per chat so a mismatched TELEGRAM_CHAT_ID is diagnosable without flooding the log.
+      const id = String(message.chat.id);
+      if (!this.warnedChats.has(id) && this.warnedChats.size < 100) {
+        this.warnedChats.add(id);
+        this.deps.log?.(`Ignoring /${command} from chat ${id}: it is not TELEGRAM_CHAT_ID`);
+      }
+      return;
+    }
+    if (message.date * 1000 < startedAt - MAX_COMMAND_AGE_MS) {
+      this.deps.log?.(`Ignoring /${command} sent before the service started`);
+      return;
+    }
+    this.deps.log?.(`Received /${command}`);
     try {
       for (const part of await this.deps.handle(command)) {
         if (!this.active) return;

@@ -115,6 +115,9 @@ test("the poller answers authorized recent commands, persists its offset and sur
   assert.equal(meta.get("telegram_update_offset"), "48");
   assert.equal(fake.registered(), 1);
   assert.ok(logs.some(line => /409/.test(line)));
+  assert.ok(logs.includes("Telegram commands enabled for @sl_bot in chat -100"));
+  assert.ok(logs.includes("Ignoring /status from chat 999: it is not TELEGRAM_CHAT_ID"));
+  assert.ok(logs.includes("Ignoring /help sent before the service started"));
   await poller.stop();
 });
 test("stop aborts a pending long poll", async () => {

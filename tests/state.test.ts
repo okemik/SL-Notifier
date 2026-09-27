@@ -83,3 +83,38 @@ test("a mid-transaction SQLite failure rolls back all sent keys and preserves th
   assert.equal(store.alreadySent("2:1"), true);
   assert.deepEqual(store.pending(), []);
 });
+
+test("queues from older versions gain attempt tracking; abandoned batches leave the queue", t => {
+  const dir = mkdtempSync(join(tmpdir(), "sl-notifier-attempts-test-"));
+  t.after(() => {
+    assert.ok(resolve(dir).startsWith(resolve(tmpdir()) + sep));
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const path = join(dir, "state.db");
+  const old = new DatabaseSync(path);
+  old.exec(`CREATE TABLE delivery_batches (id TEXT PRIMARY KEY, parts TEXT NOT NULL, next_part INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+    CREATE TABLE delivery_keys (deviation_key TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES delivery_batches(id) ON DELETE CASCADE);
+    INSERT INTO delivery_batches VALUES ('b1', '["old"]', 0, '2026-01-01T00:00:00Z');
+    INSERT INTO delivery_keys VALUES ('9:1', 'b1');`);
+  old.close();
+  const store = new StateStore(path);
+  try {
+    assert.equal(store.pending()[0].id, "b1");
+    assert.equal(store.recordFailure("b1", 2), false);
+    assert.equal(store.isQueued("9:1"), true);
+    assert.equal(store.recordFailure("b1", 2), true);
+    assert.deepEqual(store.pending(), []);
+    assert.equal(store.isQueued("9:1"), false);
+    assert.equal(store.alreadySent("9:1"), true);
+    assert.equal(store.failedCount(), 1);
+    assert.equal(store.recordFailure("b1", 2), false);
+    store.acknowledgePart("b1", 1);
+    assert.equal(store.failedCount(), 1);
+  } finally { store.close(); }
+});
+test("metadata values persist and can be replaced", t => {
+  const store = new StateStore(":memory:"); t.after(() => store.close());
+  assert.equal(store.getMeta("offset"), undefined);
+  store.setMeta("offset", "5"); store.setMeta("offset", "6");
+  assert.equal(store.getMeta("offset"), "6");
+});

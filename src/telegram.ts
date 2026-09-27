@@ -3,7 +3,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { TelegramDeliveryError } from "./errors.js";
 export { TelegramDeliveryError } from "./errors.js";
 
-export type TelegramOptions = { token: string; chatId: string; text: string; signal?: AbortSignal };
+export type TelegramOptions = {
+  token: string; chatId: string; text: string; signal?: AbortSignal; replyToMessageId?: number;
+};
 type TelegramResponse = { ok?: unknown; result?: { message_id?: unknown }; error_code?: unknown; parameters?: { retry_after?: unknown } };
 type SenderDependencies = {
   request?: (options: TelegramOptions) => Promise<TelegramResponse>;
@@ -22,7 +24,12 @@ async function request(options: TelegramOptions): Promise<TelegramResponse> {
   try {
     const response = await axios.post<TelegramResponse>(
       `https://api.telegram.org/bot${options.token}/sendMessage`,
-      { chat_id: options.chatId, text: options.text, link_preview_options: { is_disabled: true } },
+      {
+        chat_id: options.chatId, text: options.text, link_preview_options: { is_disabled: true },
+        ...(options.replyToMessageId ? {
+          reply_parameters: { message_id: options.replyToMessageId, allow_sending_without_reply: true },
+        } : {}),
+      },
       { timeout: 15000, signal: options.signal, maxRedirects: 0 },
     );
     return response.data;
@@ -70,3 +77,55 @@ export function createTelegramSender(deps: SenderDependencies = {}) {
   };
 }
 export const sendTelegramMessage = createTelegramSender();
+
+export type TelegramChat = { id: number; type?: string; username?: string };
+export type TelegramMessage = { message_id: number; date: number; text?: string; chat: TelegramChat };
+export type TelegramUpdate = { update_id: number; message?: TelegramMessage };
+export type BotCommand = { command: string; description: string };
+export type TelegramApi = {
+  getMe: (signal?: AbortSignal) => Promise<{ username?: string }>;
+  getUpdates: (offset: number | undefined, signal?: AbortSignal) => Promise<TelegramUpdate[]>;
+  setMyCommands: (commands: BotCommand[], signal?: AbortSignal) => Promise<void>;
+};
+const objectValue = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+/** Keeps only well-formed text messages; anything else becomes an update without a message. */
+export function parseUpdates(result: unknown): TelegramUpdate[] {
+  if (!Array.isArray(result)) throw new TelegramDeliveryError();
+  return result.filter(item => objectValue(item) && Number.isSafeInteger(item.update_id)).map(item => {
+    const update = item as Record<string, unknown>;
+    const message = update.message;
+    const valid = objectValue(message) && Number.isSafeInteger(message.message_id) && Number.isFinite(message.date)
+      && objectValue(message.chat) && Number.isSafeInteger(message.chat.id)
+      && (message.text === undefined || typeof message.text === "string")
+      && (message.chat.username === undefined || typeof message.chat.username === "string");
+    return { update_id: update.update_id as number, ...(valid ? { message: message as TelegramMessage } : {}) };
+  });
+}
+/** Bot API calls used for commands. Errors never include the token-bearing URL. */
+export function createTelegramApi(token: string): TelegramApi {
+  const call = async (method: string, body: object, signal?: AbortSignal, timeout = 15000): Promise<unknown> => {
+    try {
+      const response = await axios.post<TelegramResponse & { result?: unknown }>(
+        `https://api.telegram.org/bot${token}/${method}`, body, { timeout, signal, maxRedirects: 0 },
+      );
+      if (response.data?.ok !== true) throw deliveryError(response.data);
+      return response.data.result;
+    } catch (error) {
+      if (error instanceof TelegramDeliveryError) throw error;
+      if (axios.isAxiosError(error)) throw deliveryError(error.response?.data, error.response?.status);
+      throw new TelegramDeliveryError();
+    }
+  };
+  return {
+    getMe: async signal => {
+      const result = await call("getMe", {}, signal);
+      return objectValue(result) && typeof result.username === "string" ? { username: result.username } : {};
+    },
+    // Long polling: Telegram holds the request for up to 25 s when there are no updates.
+    getUpdates: async (offset, signal) => parseUpdates(await call(
+      "getUpdates", { ...(offset !== undefined ? { offset } : {}), timeout: 25, allowed_updates: ["message"] }, signal, 35000,
+    )),
+    setMyCommands: async (commands, signal) => { await call("setMyCommands", { commands }, signal); },
+  };
+}

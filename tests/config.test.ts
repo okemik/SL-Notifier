@@ -24,3 +24,10 @@ test("configuration error messages do not contain invalid secret values", () => 
     assert.equal(String(error).includes(secret), false); return true;
   });
 });
+test("manual check interval and bot commands are configurable", () => {
+  const config = loadConfig(base);
+  assert.equal(config.manualIntervalMs, 10000); assert.equal(config.commandsEnabled, true);
+  assert.equal(loadConfig({ ...base, COMMANDS_ENABLED: "false" }).commandsEnabled, false);
+  assert.throws(() => loadConfig({ ...base, MANUAL_CHECK_MIN_MS: "1000" }), /MANUAL_CHECK_MIN_MS/);
+  assert.throws(() => loadConfig({ ...base, COMMANDS_ENABLED: "maybe" }), /COMMANDS_ENABLED/);
+});

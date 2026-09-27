@@ -65,3 +65,14 @@ test("sanitization omits URL, payload, credentials and arbitrary error messages"
   assert.equal(safeError({ code: "ETIMEDOUT" }), "ETIMEDOUT");
   assert.equal(safeError(new TelegramDeliveryError(401)), "Telegram HTTP 401");
 });
+test("getUpdates results keep only well-formed text messages", async () => {
+  const { parseUpdates } = await import("../src/telegram.js");
+  const updates = parseUpdates([
+    { update_id: 1, message: { message_id: 2, date: 3, text: "/status", chat: { id: -100, username: "g" } } },
+    { update_id: 2, message: { message_id: 2, date: 3, chat: { id: "x" } } },
+    { update_id: 3, edited_message: {} },
+    { nope: true },
+  ]);
+  assert.deepEqual(updates.map(u => [u.update_id, u.message?.text]), [[1, "/status"], [2, undefined], [3, undefined]]);
+  assert.throws(() => parseUpdates({}));
+});

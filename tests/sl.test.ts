@@ -22,3 +22,17 @@ test("nested fields consumed by formatting are validated", () => {
     { message_variants: [{ header: "H", details: {}, language: "sv" }] },
   ]) assert.throws(() => parseDeviationResult([{ ...deviation(), ...patch }]), SLResponseError);
 });
+test("null optional fields and unknown transport modes do not drop an alert", () => {
+  const base = deviation();
+  const payload = [{
+    ...base, transport_mode: null, publish: { from: null, upto: null },
+    priority: { importance_level: null, influence_level: 3 },
+    message_variants: [{ ...base.message_variants[0], weblink: null, scope_alias: null }],
+    scope: { lines: [{ id: 17, designation: "17", transport_mode: "METRO", group_of_lines: null }], stop_areas: null },
+  }, { ...deviation(2), transport_mode: "CABLE_CAR" }];
+  const result = parseDeviationResult(payload);
+  assert.equal(result.rejectedCount, 0);
+  assert.equal(result.deviations.length, 2);
+  assert.equal("weblink" in result.deviations[0].message_variants[0], false);
+  assert.throws(() => parseDeviationResult([{ ...base, transport_mode: "metro<script>" }]), SLResponseError);
+});

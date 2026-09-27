@@ -6,7 +6,7 @@ import { createApp } from "../src/app.js";
 import type { CheckResult, NotifierStatus } from "../src/notifier.js";
 const status: NotifierStatus = {
   running: false, stopping: false, ready: false, lastAttemptAt: null, lastSuccessAt: null,
-  lastError: null, nextCheckAt: null, consecutiveFailures: 0, pendingBatches: 0,
+  lastError: null, nextCheckAt: null, consecutiveFailures: 0, pendingBatches: 0, failedBatches: 0,
 };
 test("HTTP liveness, readiness, authentication and check outcomes remain distinct", async t => {
   let calls = 0;

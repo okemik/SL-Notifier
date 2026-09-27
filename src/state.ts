@@ -11,6 +11,7 @@ export type DeliveryBatch = {
 };
 
 type BatchRow = { id: string; parts: string; next_part: number };
+type AttemptRow = { attempts: number };
 type KeyRow = { deviation_key: string };
 
 export class StateStore {
@@ -22,6 +23,10 @@ export class StateStore {
   private readonly enqueueBatch: (keys: string[], parts: string[]) => void;
   private readonly acknowledgeBatch: (id: string, nextPart: number) => void;
   private readonly pruneSent: (days: number, activeKeys: string[]) => void;
+  private readonly recordBatchFailure: (id: string, maxAttempts: number) => boolean;
+  private readonly failedQuery: StatementSync;
+  private readonly metaGet: StatementSync;
+  private readonly metaSet: StatementSync;
 
   constructor(filename = "state.db") {
     if (filename !== ":memory:") mkdirSync(dirname(filename), { recursive: true });
@@ -45,19 +50,38 @@ export class StateStore {
         batch_id TEXT NOT NULL REFERENCES delivery_batches(id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS delivery_keys_batch ON delivery_keys(batch_id);
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
       CREATE TEMP TABLE IF NOT EXISTS prune_active (id TEXT PRIMARY KEY);
     `);
+    // Migrate queues created before delivery attempts were tracked.
+    const columns = new Set((this.db.prepare("PRAGMA table_info(delivery_batches)").all() as Array<{ name: string }>)
+      .map(column => column.name));
+    if (!columns.has("attempts")) this.db.exec("ALTER TABLE delivery_batches ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0");
+    if (!columns.has("failed_at")) this.db.exec("ALTER TABLE delivery_batches ADD COLUMN failed_at TEXT");
     this.sentQuery = this.db.prepare("SELECT 1 FROM sent WHERE id = ?");
     this.queuedQuery = this.db.prepare("SELECT 1 FROM delivery_keys WHERE deviation_key = ?");
     this.pendingQuery = this.db.prepare(
-      "SELECT id, parts, next_part FROM delivery_batches ORDER BY created_at, rowid"
+      "SELECT id, parts, next_part FROM delivery_batches WHERE failed_at IS NULL ORDER BY created_at, rowid"
     );
     this.keysQuery = this.db.prepare("SELECT deviation_key FROM delivery_keys WHERE batch_id = ? ORDER BY rowid");
     const insertBatch = this.db.prepare(
       "INSERT INTO delivery_batches(id, parts, next_part, created_at) VALUES (?, ?, 0, ?)"
     );
     const insertKey = this.db.prepare("INSERT INTO delivery_keys(deviation_key, batch_id) VALUES (?, ?)");
-    const batchQuery = this.db.prepare("SELECT id, parts, next_part FROM delivery_batches WHERE id = ?");
+    this.failedQuery = this.db.prepare("SELECT COUNT(*) AS count FROM delivery_batches WHERE failed_at IS NOT NULL");
+    this.metaGet = this.db.prepare("SELECT value FROM meta WHERE key = ?");
+    this.metaSet = this.db.prepare("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+    const batchQuery = this.db.prepare("SELECT id, parts, next_part FROM delivery_batches WHERE id = ? AND failed_at IS NULL");
+    const attemptQuery = this.db.prepare("SELECT attempts FROM delivery_batches WHERE id = ? AND failed_at IS NULL");
+    const incrementAttempts = this.db.prepare("UPDATE delivery_batches SET attempts = attempts + 1 WHERE id = ?");
+    const markFailed = this.db.prepare("UPDATE delivery_batches SET failed_at = ? WHERE id = ?");
+    const deleteKeys = this.db.prepare("DELETE FROM delivery_keys WHERE batch_id = ?");
+    const deleteOldFailed = this.db.prepare(
+      "DELETE FROM delivery_batches WHERE failed_at IS NOT NULL AND datetime(failed_at) < datetime('now', ?)"
+    );
     const updateProgress = this.db.prepare("UPDATE delivery_batches SET next_part = ? WHERE id = ?");
     const markSent = this.db.prepare("INSERT OR REPLACE INTO sent(id, sent_at) VALUES (?, ?)");
     const deleteBatch = this.db.prepare("DELETE FROM delivery_batches WHERE id = ?");
@@ -98,8 +122,23 @@ export class StateStore {
     this.pruneSent = this.transaction((days: number, activeKeys: string[]) => {
       clearActive.run();
       for (const key of activeKeys) insertActive.run(key);
-      deleteOld.run(`-${Math.max(1, Math.floor(days))} days`);
+      const age = `-${Math.max(1, Math.floor(days))} days`;
+      deleteOld.run(age);
+      deleteOldFailed.run(age);
       clearActive.run();
+    });
+    this.recordBatchFailure = this.transaction((id: string, maxAttempts: number) => {
+      const row = attemptQuery.get(id) as AttemptRow | undefined;
+      if (!row) return false;
+      incrementAttempts.run(id);
+      if (row.attempts + 1 < maxAttempts) return false;
+      // Give up on a batch Telegram keeps rejecting. Its keys count as handled so the
+      // same deviation versions are not queued again; the batch is kept for inspection.
+      const failedAt = new Date().toISOString();
+      for (const key of this.keysQuery.all(id) as KeyRow[]) markSent.run(key.deviation_key, failedAt);
+      deleteKeys.run(id);
+      markFailed.run(failedAt, id);
+      return true;
     });
   }
 
@@ -139,16 +178,36 @@ export class StateStore {
     this.pruneSent(days, activeKeys);
   }
 
+  /** Counts a permanent delivery rejection; true when the batch has now been abandoned. */
+  recordFailure(id: string, maxAttempts = 5): boolean {
+    if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) throw new Error("Invalid attempt limit");
+    return this.recordBatchFailure(id, maxAttempts);
+  }
+
+  failedCount(): number {
+    return Number((this.failedQuery.get() as { count: number }).count);
+  }
+
+  getMeta(key: string): string | undefined {
+    const row = this.metaGet.get(key) as { value: string } | undefined;
+    return row?.value;
+  }
+
+  setMeta(key: string, value: string): void {
+    this.metaSet.run(key, value);
+  }
+
   close(): void {
     this.db.close();
   }
 
-  private transaction<Args extends unknown[]>(operation: (...args: Args) => void) {
-    return (...args: Args): void => {
+  private transaction<Args extends unknown[], Result>(operation: (...args: Args) => Result) {
+    return (...args: Args): Result => {
       this.db.exec("BEGIN IMMEDIATE");
       try {
-        operation(...args);
+        const result = operation(...args);
         this.db.exec("COMMIT");
+        return result;
       } catch (error) {
         if (this.db.isTransaction) this.db.exec("ROLLBACK");
         throw error;

@@ -3,7 +3,14 @@ import { safeError, TelegramDeliveryError } from "./errors.js";
 import type { StateStore } from "./state.js";
 import type { Deviation } from "./types.js";
 
-type Store = Pick<StateStore, "alreadySent" | "isQueued" | "enqueue" | "pending" | "acknowledgePart" | "prune">;
+type Store = Pick<StateStore, "alreadySent" | "isQueued" | "enqueue" | "pending" | "acknowledgePart" | "prune">
+  & Partial<Pick<StateStore, "recordFailure" | "failedCount">>;
+export type CheckOptions = { source?: "manual" | "scheduled" };
+export type DeviationSnapshot = { deviations: Deviation[]; fetchedAt: string };
+/** Telegram rejections that will not succeed on retry. Auth errors (401/403) are configuration problems. */
+const permanentRejection = (cause: unknown) => cause instanceof TelegramDeliveryError && cause.status !== undefined
+  && cause.status >= 400 && cause.status < 500 && ![401, 403, 429].includes(cause.status);
+export const MAX_DELIVERY_ATTEMPTS = 5;
 export type CheckResult = {
   ok: boolean; ran: boolean; skipped?: "running" | "interval" | "stopping";
   nextCheckAt?: string; fetched?: number; queued?: number; sent?: number; failed?: number; error?: string;
@@ -11,7 +18,7 @@ export type CheckResult = {
 export type NotifierStatus = {
   running: boolean; stopping: boolean; ready: boolean;
   lastAttemptAt: string | null; lastSuccessAt: string | null; lastError: string | null;
-  nextCheckAt: string | null; consecutiveFailures: number; pendingBatches: number;
+  nextCheckAt: string | null; consecutiveFailures: number; pendingBatches: number; failedBatches: number;
 };
 export type NotifierDependencies = {
   store: Store;
@@ -19,6 +26,8 @@ export type NotifierDependencies = {
   prepare: (deviation: Deviation) => Promise<PreparedDeviation>;
   send: (text: string) => Promise<void>;
   intervalMs: number; pruneDays: number; now?: () => number;
+  /** Minimum gap between a manual check and the previous SL fetch. Default 10 seconds. */
+  manualIntervalMs?: number;
   schedule?: (callback: () => void, delayMs: number) => unknown;
   cancel?: (handle: unknown) => void;
   abort?: () => void; log?: (message: string) => void;
@@ -32,19 +41,27 @@ export class Notifier {
   private started = false;
   private stopping = false;
   private activeCheck: Promise<CheckResult> | null = null;
-  private nextFetchAt = 0;
+  private readonly manualIntervalMs: number;
+  private lastFetchStartedAt: number | null = null;
+  private nextScheduledAt: number | null = null;
+  private snapshot: DeviationSnapshot | null = null;
   private retryDeliveryAt = 0;
   private lastAttemptAt: number | null = null;
   private lastSuccessAt: number | null = null;
   private lastError: string | null = null;
   private consecutiveFailures = 0;
   private pendingBatches = 0;
+  private failedBatches = 0;
   // Keep accepted parts in memory until SQLite confirms them, avoiding resends on a DB failure.
   private readonly receipts = new Map<string, number>();
 
   constructor(private readonly deps: NotifierDependencies) {
     if (!Number.isFinite(deps.intervalMs) || deps.intervalMs < 60000) {
       throw new Error("Polling interval must be at least 60000 ms");
+    }
+    this.manualIntervalMs = deps.manualIntervalMs ?? 10000;
+    if (!Number.isFinite(this.manualIntervalMs) || this.manualIntervalMs < 1000) {
+      throw new Error("Manual check interval must be at least 1000 ms");
     }
     this.now = deps.now ?? Date.now;
     this.schedule = deps.schedule ?? ((callback, delay) => setTimeout(callback, delay));
@@ -56,8 +73,11 @@ export class Notifier {
     void this.poll();
   }
   private async poll(): Promise<void> {
-    await this.check();
-    if (!this.stopping) this.timer = this.schedule(() => { void this.poll(); }, this.deps.intervalMs);
+    await this.check({ source: "scheduled" });
+    if (!this.stopping) {
+      this.nextScheduledAt = this.now() + this.deps.intervalMs;
+      this.timer = this.schedule(() => { void this.poll(); }, this.deps.intervalMs);
+    }
   }
   async stop(): Promise<void> {
     this.stopping = true;
@@ -74,17 +94,30 @@ export class Notifier {
       ready: !this.stopping && recent && this.consecutiveFailures === 0,
       lastAttemptAt: this.lastAttemptAt === null ? null : new Date(this.lastAttemptAt).toISOString(),
       lastSuccessAt: this.lastSuccessAt === null ? null : new Date(this.lastSuccessAt).toISOString(),
-      lastError: this.lastError, nextCheckAt: this.nextFetchAt ? new Date(this.nextFetchAt).toISOString() : null,
+      lastError: this.lastError,
+      nextCheckAt: this.nextScheduledAt === null ? null : new Date(this.nextScheduledAt).toISOString(),
       consecutiveFailures: this.consecutiveFailures, pendingBatches: this.pendingBatches,
+      failedBatches: this.failedBatches,
     };
   }
-  async check(): Promise<CheckResult> {
+  /** Deviations from the most recent SL response that could be read, or null before the first one. */
+  activeDeviations(): DeviationSnapshot | null {
+    return this.snapshot;
+  }
+  /**
+   * Scheduled checks always run (unless one is already running). Manual checks are limited to one
+   * SL fetch per manualIntervalMs so they cannot hammer SL, but they no longer wait a full polling interval.
+   */
+  async check(options: CheckOptions = {}): Promise<CheckResult> {
     if (this.stopping) return { ok: false, ran: false, skipped: "stopping" };
     if (this.activeCheck) return { ok: true, ran: false, skipped: "running" };
-    if (this.now() < this.nextFetchAt) {
-      return { ok: true, ran: false, skipped: "interval", nextCheckAt: new Date(this.nextFetchAt).toISOString() };
+    if ((options.source ?? "manual") === "manual" && this.lastFetchStartedAt !== null) {
+      const allowedAt = this.lastFetchStartedAt + this.manualIntervalMs;
+      if (this.now() < allowedAt) {
+        return { ok: true, ran: false, skipped: "interval", nextCheckAt: new Date(allowedAt).toISOString() };
+      }
     }
-    this.nextFetchAt = this.now() + this.deps.intervalMs;
+    this.lastFetchStartedAt = this.now();
     this.activeCheck = this.run();
     try { return await this.activeCheck; }
     finally { this.activeCheck = null; }
@@ -104,10 +137,10 @@ export class Notifier {
       let activeKeys: string[] | undefined;
       let deviations: Deviation[] = [];
       try {
-        this.nextFetchAt = this.now() + this.deps.intervalMs;
         const result = await this.deps.fetch();
         deviations = result.deviations;
         fetched = deviations.length;
+        this.snapshot = { deviations, fetchedAt: new Date(this.now()).toISOString() };
         if (result.rejectedCount > 0) fail("SL returned invalid deviation records", result.rejectedCount);
         else activeKeys = deviations.map(d => `${d.deviation_case_id}:${d.version}`);
       } catch (cause) { fail(`SL check failed: ${safeError(cause)}`); }
@@ -142,6 +175,9 @@ export class Notifier {
                 break delivery;
               }
               if (cause instanceof TelegramDeliveryError && (cause.status === 401 || cause.status === 403)) break delivery;
+              if (permanentRejection(cause) && this.deps.store.recordFailure?.(batch.id, MAX_DELIVERY_ATTEMPTS)) {
+                this.deps.log?.(`Telegram rejected a message batch ${MAX_DELIVERY_ATTEMPTS} times; it will not be retried`);
+              }
               continue delivery;
             }
             this.receipts.set(batch.id, part + 1);
@@ -153,6 +189,7 @@ export class Notifier {
       }
       if (activeKeys !== undefined && !this.stopping) this.deps.store.prune(this.deps.pruneDays, activeKeys);
       this.pendingBatches = this.deps.store.pending().length;
+      this.failedBatches = this.deps.store.failedCount?.() ?? 0;
     } catch (cause) { fail(`Notification state failed: ${safeError(cause)}`); }
     if (this.stopping) fail("Notification check interrupted by shutdown");
     const ok = failed === 0;

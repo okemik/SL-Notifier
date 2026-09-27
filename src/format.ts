@@ -13,7 +13,7 @@ export function pickVariant(d: Deviation, preferredLang = "sv") {
   return d.message_variants.find(v => language(v.language) === language(preferredLang))
     ?? d.message_variants.find(v => language(v.language) === "sv") ?? d.message_variants[0];
 }
-function scopeGroup(d: Deviation, fallbackMode: string): string {
+export function scopeGroup(d: Deviation, fallbackMode: string): string {
   const groups = new Map<string, Set<string>>();
   for (const line of d.scope?.lines ?? []) {
     const mode = line.transport_mode ?? d.transport_mode ?? fallbackMode;

@@ -158,3 +158,45 @@ test("stop waits for an in-flight send and persists its acknowledgement before r
   assert.equal(h.store.alreadySent("late:1"), true);
   assert.equal(h.notifier.status().running, false);
 });
+
+test("manual checks wait only the short manual interval and never delay scheduled polling", async t => {
+  const h = harness(t);
+  h.notifier.start(); await settle();
+  assert.equal(h.fetches(), 1);
+  h.advance(3000);
+  const early = await h.notifier.check();
+  assert.equal(early.skipped, "interval");
+  assert.equal(Date.parse(early.nextCheckAt!), 1000000 + 10000);
+  h.advance(7000);
+  assert.equal((await h.notifier.check()).ran, true); assert.equal(h.fetches(), 2);
+  // The scheduled poll is not skipped because a manual check just ran.
+  h.advance(1000); h.timers[0].callback(); await settle();
+  assert.equal(h.fetches(), 3);
+  await h.notifier.stop();
+});
+test("a batch Telegram keeps rejecting is abandoned after five attempts; auth errors are not counted", async t => {
+  let status = 400;
+  const h = harness(t, {
+    fetch: async () => ({ deviations: [deviation(1, "Bad", [17]), deviation(2, "Good", [18])], rejectedCount: 0 }),
+    send: async text => { if (text.includes("Line 17")) throw new TelegramDeliveryError(status); h.messages.push(text); },
+  });
+  status = 403;
+  for (let i = 0; i < 6; i++) { await h.notifier.check(); h.advance(); }
+  assert.equal(h.store.isQueued("1:1"), true); assert.equal(h.store.failedCount(), 0);
+  status = 400;
+  for (let i = 0; i < 4; i++) { assert.equal((await h.notifier.check()).ok, false); h.advance(); }
+  assert.equal(h.store.isQueued("1:1"), true);
+  await h.notifier.check(); h.advance();
+  assert.equal(h.store.isQueued("1:1"), false); assert.equal(h.store.alreadySent("1:1"), true);
+  assert.equal(h.notifier.status().failedBatches, 1);
+  assert.equal((await h.notifier.check()).ok, true);
+  assert.equal(h.store.alreadySent("2:1"), true);
+});
+test("the latest readable SL response is available for status commands", async t => {
+  const h = harness(t, { fetch: async () => ({ deviations: [deviation(7)], rejectedCount: 1 }) });
+  assert.equal(h.notifier.activeDeviations(), null);
+  await h.notifier.check();
+  const snapshot = h.notifier.activeDeviations()!;
+  assert.deepEqual(snapshot.deviations.map(d => d.deviation_case_id), [7]);
+  assert.equal(snapshot.fetchedAt, new Date(1000000).toISOString());
+});

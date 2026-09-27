@@ -3,6 +3,7 @@ export type Config = {
   lines: number[]; future: boolean; preferredLang: string; translateEnabled: boolean;
   translateBackend: "google" | "libre"; translateEndpoint?: string;
   timeZone: string; pruneDays: number; stateDb: string; port: number; checkApiKey?: string;
+  manualIntervalMs: number; commandsEnabled: boolean;
 };
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const required = (name: string) => {
@@ -49,5 +50,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     translateBackend, translateEndpoint,
     pruneDays: integer("PRUNE_DAYS", 14, 1, 3650), stateDb,
     port: integer("PORT", 3000, 1, 65535), checkApiKey: env.CHECK_API_KEY?.trim() || undefined,
+    manualIntervalMs: integer("MANUAL_CHECK_MIN_MS", 10000, 5000, 3600000),
+    commandsEnabled: boolean("COMMANDS_ENABLED", true),
   };
 }

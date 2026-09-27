@@ -2,7 +2,8 @@
 
 A small service that monitors SL deviations and sends new or updated alerts to one Telegram chat.
 It checks immediately on startup and schedules the next check after the previous check finishes
-(default delay: 60 seconds). Automatic and manual checks share a lock and a minimum request interval.
+(default delay: 60 seconds). Automatic and manual checks share a lock; manual checks are additionally
+limited to one SL request per `MANUAL_CHECK_MIN_MS` (default 10 seconds).
 
 Alerts are grouped by the actual affected transport modes and lines. Original text and available
 English text are retained; Swedish text can optionally be translated to English. Messages are split
@@ -60,14 +61,16 @@ For a host bind mount, ensure the node user (UID 1000) can write the data direct
 | FUTURE | false | Include future deviations |
 | PREFERRED_LANG | sv | Preferred original message language |
 | TRANSLATE_ENABLED | true | Try Swedish-to-English translation if no English variant exists |
- | TRANSLATE_BACKEND | google | "google" (default) uses a built-in free, key-less chain: Google's dict-chrome-ex endpoint with an automatic MyMemory fallback; "libre" uses a self-hosted LibreTranslate instance, no API key |
- | TRANSLATE_ENDPOINT | Empty | Base URL of a self-hosted LibreTranslate instance (used with TRANSLATE_BACKEND=libre) |
- | TRANSLATE_EMAIL | Empty | Optional; raises the free MyMemory daily character quota when the Google fallback chain is exhausted |
+| TRANSLATE_BACKEND | google | "google" (default) uses a built-in free, key-less chain: Google's dict-chrome-ex endpoint with an automatic MyMemory fallback; "libre" uses a self-hosted LibreTranslate instance, no API key |
+| TRANSLATE_ENDPOINT | Empty | Base URL of a self-hosted LibreTranslate instance (used with TRANSLATE_BACKEND=libre) |
+| TRANSLATE_EMAIL | Empty | Optional; raises the free MyMemory daily character quota when the Google fallback chain is exhausted |
 | TZ | Europe/Stockholm | Time zone for displayed validity dates |
 | PRUNE_DAYS | 14 | Retain inactive sent records for this many days (1–3650) |
 | STATE_DB | state.db | SQLite path; Compose uses /data/state.db |
 | PORT | 3000 | HTTP port (1–65535); Compose fixes it to 3000 |
 | CHECK_API_KEY | Empty | Bearer secret for manual checks; empty disables the endpoint |
+| MANUAL_CHECK_MIN_MS | 10000 | Minimum gap (5000–3600000 ms) between a manual check and the previous SL request |
+| COMMANDS_ENABLED | true | Answer Telegram bot commands from TELEGRAM_CHAT_ID (see below) |
 
 Invalid values fail at startup rather than silently monitoring different lines.
 Translation is optional: a missing or failing translation never blocks the original alert from being
@@ -93,7 +96,8 @@ curl -X POST http://localhost:3000/check -H "Authorization: Bearer YOUR_CHECK_AP
 ```
 
 A completed check returns 200 on success or 503 on failure. Concurrent requests get 409;
-requests inside the polling interval get 429 with Retry-After. A skipped request never starts
+requests within `MANUAL_CHECK_MIN_MS` of the previous SL request get 429 with Retry-After.
+Manual checks never delay the scheduled polling. A skipped request never starts
 another SL fetch. Keep health endpoints on a trusted network or behind your own proxy.
 
 ## Delivery and state
@@ -107,6 +111,12 @@ another SL fetch. Keep health endpoints on a trusted network or behind your own 
   after restart, delivery resumes at the first unacknowledged part.
 - A SQLite acknowledgement failure stops further delivery. In the same process the accepted part is
   remembered and its acknowledgement is retried before another send.
+- A message batch that Telegram rejects permanently (4xx other than 401/403/429) five times is abandoned:
+  its deviation versions count as handled, it leaves the queue, and `/ready` reports it in `failedBatches`.
+  Abandoned batches stay in SQLite for inspection and are removed after `PRUNE_DAYS`.
+  401/403 (bad token, bot removed) are configuration problems and are retried without counting.
+- SL records with `null` optional fields are treated as if the field were absent, and unknown transport
+  modes are shown with a generic icon instead of dropping the alert.
 - Explicit Telegram 429/5xx responses get bounded retries. Telegram retry_after is respected; longer
   waits defer the queue. Requests are spaced by at least three seconds to respect the group limit of 20 messages per minute. Ambiguous network failures are not
   retried inside the same send; the durable queue is revisited on a later check.
@@ -127,6 +137,26 @@ another SL fetch. Keep health endpoints on a trusted network or behind your own 
 Tests use local fixtures and fake network clients; no Telegram credentials are needed.
 
 The qs 6.16.0 override fixes audited parser vulnerabilities while retaining the existing Express 4 API.
+
+## Telegram bot commands
+
+With `COMMANDS_ENABLED=true` (default) the service also reads bot commands using Telegram long polling
+(`getUpdates`), so no public URL or webhook is needed. Only messages from `TELEGRAM_CHAT_ID` are answered;
+other chats are ignored silently. Commands older than two minutes (e.g. sent while the service was down)
+are skipped, and the update offset is stored in SQLite.
+
+| Command | Alias | Reply |
+| --- | --- | --- |
+| /status | /durum | Active deviations on the monitored lines (from the latest SL check), plus delivery problems |
+| /lines | /hatlar | Monitored transport mode, lines and polling settings |
+| /check | /kontrol | Runs a check now (subject to `MANUAL_CHECK_MIN_MS`) and reports the result |
+| /help | /yardim, /start | Command list |
+
+The English commands are registered as the bot's command menu at startup. In groups with privacy mode on,
+use `/status@your_bot` if other bots are present. Only one process may call `getUpdates` per bot token:
+if a webhook is set or another program polls the same bot, the log shows a 409 conflict. Then remove the
+webhook (`deleteWebhook`) or set `COMMANDS_ENABLED=false`. Replies go through the same rate-limited sender
+as alerts.
 
 ## Telegram groups
 
